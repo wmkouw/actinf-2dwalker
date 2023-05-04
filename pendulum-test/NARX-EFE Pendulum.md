@@ -143,14 +143,15 @@ H = 1
 
 # Basis expansion
 # ϕ(x; N::Int64 = 10) = [1; cat([[cos.(2π*n*x); sin.(2π*n*x)] for n = 1:N]..., dims=1)]
-ϕ(x; N::Integer = 1) = [1; x; x.^2]
+ϕ(x; N::Integer = 1) = [1; x; x.^2; x.^3]
+# ϕ(x; N::Integer = 1) = [1; x; x.^2]
 # ϕ(x; N::Integer = 1) = [1; x]
 ```
 
 ```julia
 # Delay order
-Lx = 10
-Lu = 10
+Lx = 20
+Lu = 20
 
 # Model order
 M = size(ϕ(zeros(Lx+Lu)),1)
@@ -244,7 +245,7 @@ pθ = [pθ[end]]
 
 ```julia
 # VI options
-num_iters = 10;
+num_iters = 5;
 constraints = @constraints begin 
     q(θ, τ) = q(θ)q(τ)
 end
@@ -352,8 +353,7 @@ end
 gif(anim, "figures/NARX-EFE-pendulum_prediction.gif", fps=24)
 ```
 
-## Expected Free Energy minimization (controller)
-
+## Expected Free Energy minimization
 
 ```julia
 function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
@@ -385,7 +385,7 @@ function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
         risk = 0.5*(log(σ_star/σ_y) + (μ_y - μ_star)'*inv(σ_star)*(μ_y - μ_star) + tr(inv(σ_star)*σ_y))
         
         # Add to cumulative EFE
-        cEFE += risk + ambiguity #+ λ*control[t]^2
+        cEFE += risk #+ ambiguity + λ*control[t]^2
         
         # Update previous 
         xbuffer = backshift(xbuffer, μ_y)
@@ -397,20 +397,20 @@ end;
 
 ```julia
 # Length of trial
-T      = 300
+T      = 500
 time   = range(0.0, step=Δt, length=T)
 thorizon = 10;
 
 # VI options
-num_iters = 10;
+num_iters = 3;
 constraints = @constraints begin 
     q(θ, τ) = q(θ)q(τ)
 end
 
 # Set control properties
-setpoint = 0.0
-goal_pdf = (setpoint, 1e-3)
-u_lims = (-10, 10)
+setpoint = 3.141592
+goal_pdf = (setpoint, 1e-4)
+u_lims = (-100, 100)
 
 # Initial state
 init_state = [randn(), 0.0]
@@ -427,6 +427,7 @@ xbuffer = zeros(Lx)
 ubuffer = zeros(Lu)
 pred_m = zeros(thorizon,T)
 pred_s = zeros(thorizon,T)
+fe = zeros(num_iters, T)
 
 @showprogress for (k,t) in enumerate(time)
     
@@ -449,7 +450,9 @@ pred_s = zeros(thorizon,T)
         initmarginals = (θ = pθ0, τ = pτ0),
         initmessages  = (θ = pθ0, τ = pτ0),
         returnvars    = (θ = KeepLast(), τ = KeepLast(),),        
+        free_energy   = true,
     )
+    fe[:,k] = results.free_energy
     
     # Update beliefs
     push!(pθ, results.posteriors[:θ])
@@ -465,7 +468,7 @@ pred_s = zeros(thorizon,T)
     J(policy) = EFE(policy, xbuffer, ubuffer, goal_pdf, (mθ, mτ), λ=1e-6, time_horizon=thorizon)
 
     # Minimize
-    results = optimize(J, u_lims[1], u_lims[2], randn(thorizon), Fminbox(LBFGS()), autodiff=:forward)
+    results = optimize(J, u_lims[1], u_lims[2], zeros(thorizon), Fminbox(LBFGS()), autodiff=:forward)
     
     # Control law
     policy = Optim.minimizer(results)
@@ -491,8 +494,13 @@ end
 ```
 
 ```julia
+plot(fe[end,:] .- fe[1,:])
+```
+
+```julia
 p1 = plot(time, z_[1,:], color="blue", label="state", ylabel="angle")
 scatter!( time, y_, color="black", markersize=2, label="measurement")
+hline!([setpoint], color="green", ylims=[0., 6.])
 p4 = plot(time, u_[1:end-1], color="red", ylabel="controls", xlabel="time [s]")
 
 plot(p1,p4, layout=grid(2,1, heights=[.7, .3]), size=(900,400))
@@ -513,10 +521,12 @@ anim = @animate for k in 2:(T-thorizon-1)
         plot(time[1:k], z_[1,1:k], color="blue", xlims=(time[1], time[window+thorizon+1]+0.5), label="past data", ylabel="state box", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(time[k:k+thorizon], z_[1,k:k+thorizon], color="purple", label="true future", linestyle=:dot)
         plot!(time[k+1:k+thorizon], pred_m[:,k], ribbon=pred_s[:,k], label="predicted future", color="orange", legend=:topleft)
+        hline!([setpoint], color="green", ylims=[0., 6.])
     else
         plot(time[k-window:k], z_[1,k-window:k], color="blue", xlims=(time[k-window], time[k+thorizon+1]+0.5), label="past data", ylabel="state box", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(time[k:k+thorizon], z_[1,k:k+thorizon], color="purple", label="true future", linestyle=:dot)
         plot!(time[k+1:k+thorizon], pred_m[:,k], ribbon=pred_s[:,k], label="prediction", color="orange", legend=:topleft)
+        hline!([setpoint], color="green", ylims=[0., 6.])
     end
 end
 gif(anim, "figures/NARX-EFE-pendulum_plan_trial00.gif", fps=30)
